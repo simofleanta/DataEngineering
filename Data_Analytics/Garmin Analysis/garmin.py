@@ -6,11 +6,18 @@ from plotly.subplots import make_subplots
 from pathlib import Path
 from datetime import datetime
 import numpy as np
+import subprocess
+import sys
+from sklearn.linear_model import LinearRegression
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import r2_score, mean_absolute_error, mean_squared_error
+from scipy import stats
+import warnings
+warnings.filterwarnings('ignore')
 
 # Configurare pagină
 st.set_page_config(
     page_title="Garmin Activity Dashboard",
-    page_icon="",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -39,6 +46,37 @@ df = load_data()
 if df is not None:
     # Sidebar - Filtre
     st.sidebar.header("Filtre")
+    
+    # Buton pentru sincronizare cu Garmin Connect
+    st.sidebar.subheader("Sync from Garmin")
+    if st.sidebar.button("Download New Activities", use_container_width=True):
+        with st.spinner("Connecting to Garmin Connect..."):
+            try:
+                # Get Python executable path
+                python_path = sys.executable
+                garminpy_path = Path(__file__).parent / "garminpy.py"
+                
+                # Run garminpy.py
+                result = subprocess.run(
+                    [python_path, str(garminpy_path)],
+                    capture_output=True,
+                    text=True,
+                    timeout=60
+                )
+                
+                if result.returncode == 0:
+                    st.sidebar.success("New activities downloaded!")
+                    # Clear cache and reload
+                    st.cache_data.clear()
+                    st.rerun()
+                else:
+                    st.sidebar.error(f"Error: {result.stderr}")
+            except subprocess.TimeoutExpired:
+                st.sidebar.error("Timeout: Garmin sync took too long")
+            except Exception as e:
+                st.sidebar.error(f"Error: {str(e)}")
+    
+    st.sidebar.divider()
     
     # Filtrare după tip activitate
     tipuri = ['Toate'] + list(df['Tip'].unique())
@@ -261,8 +299,6 @@ if df is not None:
             )
             
             st.plotly_chart(fig_heart, width='stretch')
-        else:
-            st.info("No heart rate data available for the filtered activities")
     
     with col2:
         # Altitude
@@ -286,8 +322,6 @@ if df is not None:
             )
             
             st.plotly_chart(fig_alt, width='stretch')
-        else:
-            st.info("No altitude data available for the filtered activities")
     
     st.markdown("---")
     
@@ -399,68 +433,393 @@ if df is not None:
             
             st.plotly_chart(fig_swim_progress, width='stretch')
         
-        # Detailed swim comparison table
-        st.subheader("Swim Comparison Table")
+        st.markdown("---")
+    
+    # Cycle Comparison Section
+    df_cycles = df[df['Tip'] == 'cycling'].copy()
+    
+    if not df_cycles.empty:
+        st.header("Cycle Performance Comparison")
         
-        df_swims_display = df_swims[['Data', 'Nume', 'Distanță (km)', 'Durată (min)', 
-                                      'Pace (min/km)', 'Calorii', 'Calorii/km', 
-                                      'Ritm cardiac mediu']].copy()
-        df_swims_display['Data'] = df_swims_display['Data'].dt.strftime('%Y-%m-%d')
-        df_swims_display = df_swims_display.sort_values('Data', ascending=False)
+        # Calculate cycle metrics
+        df_cycles['Speed (km/h)'] = (df_cycles['Distanță (km)'] / df_cycles['Durată (min)']) * 60
+        df_cycles['Calorii/km'] = df_cycles['Calorii'] / df_cycles['Distanță (km)']
         
-        # Format numeric columns
-        df_swims_display['Pace (min/km)'] = df_swims_display['Pace (min/km)'].round(2)
-        df_swims_display['Calorii/km'] = df_swims_display['Calorii/km'].round(0)
+        # Cycle stats overview
+        col1, col2, col3, col4 = st.columns(4)
         
-        st.dataframe(
-            df_swims_display,
-            width='stretch',
-            hide_index=True
-        )
+        with col1:
+            st.metric(
+                label="Total Rides",
+                value=len(df_cycles)
+            )
+        
+        with col2:
+            total_cycle_distance = df_cycles['Distanță (km)'].sum()
+            st.metric(
+                label="Total Distance (km)",
+                value=f"{total_cycle_distance:.2f}"
+            )
+        
+        with col3:
+            avg_speed = df_cycles['Speed (km/h)'].mean()
+            st.metric(
+                label="Avg Speed (km/h)",
+                value=f"{avg_speed:.2f}"
+            )
+        
+        with col4:
+            max_speed = df_cycles['Speed (km/h)'].max()
+            st.metric(
+                label="Max Speed (km/h)",
+                value=f"{max_speed:.2f}"
+            )
+        
+        # Cycle comparison charts
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            # Distance vs Speed scatter
+            fig_cycle_speed = go.Figure()
+            
+            fig_cycle_speed.add_trace(go.Scatter(
+                x=df_cycles['Distanță (km)'],
+                y=df_cycles['Speed (km/h)'],
+                mode='markers+text',
+                marker=dict(
+                    size=12,
+                    color=df_cycles['Calorii'],
+                    colorscale='Greens',
+                    showscale=True,
+                    colorbar=dict(title="Calories")
+                ),
+                text=df_cycles['Speed (km/h)'].round(1),
+                textposition='top center',
+                hovertemplate='<b>Date: %{customdata}</b><br>Distance: %{x:.2f} km<br>Speed: %{y:.2f} km/h<extra></extra>',
+                customdata=df_cycles['Data'].dt.strftime('%d/%m/%Y')
+            ))
+            
+            fig_cycle_speed.update_layout(
+                title='Cycling Distance vs Speed',
+                xaxis_title='Distance (km)',
+                yaxis_title='Speed (km/h)',
+                height=400
+            )
+            
+            st.plotly_chart(fig_cycle_speed, width='stretch')
+        
+        with col2:
+            # Speed progress over time
+            fig_cycle_progress = go.Figure()
+            
+            fig_cycle_progress.add_trace(go.Scatter(
+                x=df_cycles['Data'],
+                y=df_cycles['Speed (km/h)'],
+                mode='lines+markers',
+                name='Speed',
+                line=dict(color='green', width=2),
+                marker=dict(size=8),
+                hovertemplate='<b>%{x}</b><br>Speed: %{y:.2f} km/h<extra></extra>'
+            ))
+            
+            # Add trend line
+            z = np.polyfit(range(len(df_cycles)), df_cycles['Speed (km/h)'], 1)
+            p = np.poly1d(z)
+            fig_cycle_progress.add_trace(go.Scatter(
+                x=df_cycles['Data'],
+                y=p(range(len(df_cycles))),
+                mode='lines',
+                name='Trend',
+                line=dict(color='darkred', dash='dash', width=2)
+            ))
+            
+            fig_cycle_progress.update_layout(
+                title='Cycling Speed Progress Over Time',
+                xaxis_title='Date',
+                yaxis_title='Speed (km/h)',
+                height=400,
+                showlegend=True
+            )
+            
+            st.plotly_chart(fig_cycle_progress, width='stretch')
         
         st.markdown("---")
     
-    # Data table
-    st.header("Activity Details")
+    # Machine Learning: Calorie Prediction
+    st.header("Machine Learning: Calorie Prediction")
     
-    # Sorting option
-    col1, col2 = st.columns([1, 3])
-    with col1:
-        sort_by = st.selectbox(
-            "Sort by:",
-            ['Data', 'Calorii', 'Distanță (km)', 'Durată (min)', 'Tip']
-        )
+    st.markdown("""
+    This section uses **Linear Regression** to predict calories burned based on:
+    - Distance (km)
+    - Duration (min) 
+    - Average Heart Rate (BPM)
+    """)
     
-    with col2:
-        sort_order = st.radio("Order:", ['Descending', 'Ascending'], horizontal=True)
+    # Prepare data for ML
+    df_ml = df_filtered[['Distanță (km)', 'Durată (min)', 'Ritm cardiac mediu', 'Calorii']].copy()
+    df_ml = df_ml[df_ml['Ritm cardiac mediu'] > 0]
+    df_ml = df_ml.dropna()
     
-    # Apply sorting
-    df_display = df_filtered.sort_values(
-        by=sort_by,
-        ascending=(sort_order == 'Ascending')
-    )
+    if len(df_ml) >= 15:
+        # Features and target
+        X = df_ml[['Distanță (km)', 'Durată (min)', 'Ritm cardiac mediu']].values
+        y = df_ml['Calorii'].values
+        
+        # Split data
+        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+        
+        # Train Linear Regression Model
+        lr_model = LinearRegression()
+        lr_model.fit(X_train, y_train)
+        lr_pred_train = lr_model.predict(X_train)
+        lr_pred_test = lr_model.predict(X_test)
+        
+        lr_r2_train = r2_score(y_train, lr_pred_train)
+        lr_r2_test = r2_score(y_test, lr_pred_test)
+        lr_mae = mean_absolute_error(y_test, lr_pred_test)
+        lr_rmse = np.sqrt(mean_squared_error(y_test, lr_pred_test))
+        
+        # Model Performance
+        st.subheader("Model Performance")
+        
+        col1, col2, col3, col4 = st.columns(4)
+        
+        with col1:
+            st.metric("R² Score (Train)", f"{lr_r2_train:.3f}")
+        with col2:
+            st.metric("R² Score (Test)", f"{lr_r2_test:.3f}")
+        with col3:
+            st.metric("MAE (Test)", f"{lr_mae:.1f} cal")
+        with col4:
+            st.metric("RMSE (Test)", f"{lr_rmse:.1f} cal")
+        
+        st.markdown("---")
+        
+        # Prediction Quality and Analysis
+        st.subheader("Model Analysis")
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            # Actual vs Predicted
+            fig_lr = go.Figure()
+            
+            fig_lr.add_trace(go.Scatter(
+                x=y_test,
+                y=lr_pred_test,
+                mode='markers',
+                marker=dict(size=10, color='steelblue', opacity=0.7),
+                name='Predictions',
+                hovertemplate='Actual: %{x:.0f}<br>Predicted: %{y:.0f}<extra></extra>'
+            ))
+            
+            min_val = min(y_test.min(), lr_pred_test.min())
+            max_val = max(y_test.max(), lr_pred_test.max())
+            fig_lr.add_trace(go.Scatter(
+                x=[min_val, max_val],
+                y=[min_val, max_val],
+                mode='lines',
+                line=dict(color='red', dash='dash', width=2),
+                name='Perfect Prediction'
+            ))
+            
+            fig_lr.update_layout(
+                title=f'Actual vs Predicted (R²={lr_r2_test:.3f})',
+                xaxis_title='Actual Calories',
+                yaxis_title='Predicted Calories',
+                height=400,
+                showlegend=True
+            )
+            
+            st.plotly_chart(fig_lr, use_container_width=True)
+        
+        with col2:
+            # Feature Importance - Horizontal Bar Chart
+            feature_names = ['Distance (km)', 'Duration (min)', 'Heart Rate (BPM)']
+            coefficients = lr_model.coef_
+            
+            # Normalize coefficients for color mapping (0 to max)
+            max_coef = max(abs(coefficients))
+            normalized_coefs = [c / max_coef if max_coef > 0 else 0 for c in coefficients]
+            
+            fig_coef = go.Figure()
+            
+            fig_coef.add_trace(go.Bar(
+                y=feature_names,
+                x=coefficients,
+                orientation='h',
+                marker=dict(
+                    color=coefficients,
+                    colorscale='Reds',
+                    showscale=True,
+                    colorbar=dict(title="Coefficient")
+                ),
+                text=[f'{c:.2f}' for c in coefficients],
+                textposition='outside',
+                hovertemplate='<b>%{y}</b><br>Coefficient: %{x:.2f}<extra></extra>'
+            ))
+            
+            fig_coef.update_layout(
+                title='Feature Impact on Calorie Prediction',
+                xaxis_title='Coefficient',
+                yaxis_title='Feature',
+                height=400,
+                showlegend=False
+            )
+            
+            st.plotly_chart(fig_coef, use_container_width=True)
+        
+        # Residuals Plot
+        st.subheader("Residual Analysis")
+        
+        residuals = y_test - lr_pred_test
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            # Residuals vs Predicted
+            fig_res = go.Figure()
+            
+            fig_res.add_trace(go.Scatter(
+                x=lr_pred_test,
+                y=residuals,
+                mode='markers',
+                marker=dict(size=8, color='coral', opacity=0.7),
+                hovertemplate='Predicted: %{x:.0f}<br>Residual: %{y:.0f}<extra></extra>'
+            ))
+            
+            # Add zero line
+            fig_res.add_hline(y=0, line_dash="dash", line_color="red", line_width=2)
+            
+            fig_res.update_layout(
+                title='Residuals vs Predicted Values',
+                xaxis_title='Predicted Calories',
+                yaxis_title='Residuals (Actual - Predicted)',
+                height=400
+            )
+            
+            st.plotly_chart(fig_res, use_container_width=True)
+        
+        with col2:
+            # Residuals Distribution
+            fig_hist = go.Figure()
+            
+            fig_hist.add_trace(go.Histogram(
+                x=residuals,
+                nbinsx=15,
+                marker=dict(color='lightblue', line=dict(color='darkblue', width=1)),
+                name='Residuals'
+            ))
+            
+            fig_hist.update_layout(
+                title='Residuals Distribution',
+                xaxis_title='Residuals',
+                yaxis_title='Frequency',
+                height=400,
+                showlegend=False
+            )
+            
+            st.plotly_chart(fig_hist, use_container_width=True)
+        
+        st.markdown("---")
+        
+        # Interactive Prediction
+        st.subheader("Predict Your Calories")
+        st.markdown("Use the sliders below to estimate calories burned:")
+        
+        col1, col2, col3 = st.columns(3)
+        
+        with col1:
+            pred_distance = st.slider("Distance (km)", 0.5, 25.0, 5.0, 0.5)
+        with col2:
+            pred_duration = st.slider("Duration (min)", 10, 200, 60, 5)
+        with col3:
+            pred_hr = st.slider("Avg Heart Rate (BPM)", 60, 180, 120, 5)
+        
+        # Make prediction
+        custom_input = np.array([[pred_distance, pred_duration, pred_hr]])
+        lr_custom_pred = lr_model.predict(custom_input)[0]
+        
+        # Display prediction
+        st.markdown(f"### Estimated Calories: **{lr_custom_pred:.0f} kcal**")
+        
+        # Model insights
+        with st.expander("Model Insights"):
+            st.markdown(f"""
+            **Linear Regression Coefficients:**
+            - Intercept: {lr_model.intercept_:.2f}
+            - Distance coefficient: {lr_model.coef_[0]:.2f} (cal/km)
+            - Duration coefficient: {lr_model.coef_[1]:.2f} (cal/min)
+            - Heart Rate coefficient: {lr_model.coef_[2]:.2f} (cal/BPM)
+            
+            **Interpretation:**
+            - Each km adds ~{lr_model.coef_[0]:.1f} calories
+            - Each minute adds ~{lr_model.coef_[1]:.1f} calories
+            - Each BPM adds ~{lr_model.coef_[2]:.1f} calories
+            """)
+        
+    else:
+        st.warning("Not enough data for machine learning. Need at least 15 activities with heart rate data.")
     
-    # Format table
-    st.dataframe(
-        df_display[['Data', 'Nume', 'Tip', 'Distanță (km)', 'Durată (min)', 'Calorii', 'Ritm cardiac mediu']],
-        width='stretch',
-        hide_index=True
-    )
-    
-    # Download data
     st.markdown("---")
-    st.header("Export Data")
+    
+    # Conclusions
+    st.header("Key Insights and Conclusions")
+    
+    # Calculate summary statistics
+    total_activities = len(df_filtered)
+    total_distance = df_filtered['Distanță (km)'].sum()
+    total_duration = df_filtered['Durată (min)'].sum()
+    total_calories = df_filtered['Calorii'].sum()
+    avg_hr = df_filtered[df_filtered['Ritm cardiac mediu'] > 0]['Ritm cardiac mediu'].mean()
+    
+    # Activity breakdown
+    activity_counts = df_filtered['Tip'].value_counts()
+    most_common_activity = activity_counts.index[0] if len(activity_counts) > 0 else "N/A"
     
     col1, col2 = st.columns(2)
     
     with col1:
-        csv = df_filtered.to_csv(index=False).encode('utf-8')
-        st.download_button(
-            label="Download CSV",
-            data=csv,
-            file_name=f'activities_garmin_{datetime.now().strftime("%Y%m%d")}.csv',
-            mime='text/csv'
-        )
+        st.subheader("Performance Summary")
+        st.markdown(f"""
+        **Overall Statistics:**
+        - Total Activities Analyzed: **{total_activities}**
+        - Total Distance Covered: **{total_distance:.2f} km**
+        - Total Time Spent: **{total_duration:.0f} minutes** ({total_duration/60:.1f} hours)
+        - Total Calories Burned: **{total_calories:.0f} kcal**
+        - Average Heart Rate: **{avg_hr:.0f} BPM**
+        
+        **Activity Distribution:**
+        - Most Frequent Activity: **{most_common_activity}**
+        - Activity Types: **{len(activity_counts)}**
+        """)
     
     with col2:
-        st.info(f"Filtered activities: {len(df_filtered)} out of {len(df)} activities")
+        st.subheader("Machine Learning Insights")
+        if len(df_ml) >= 15:
+            st.markdown(f"""
+            **Model Performance:**
+            - Algorithm: **Linear Regression**
+            - Test R² Score: **{lr_r2_test:.3f}**
+            - Mean Absolute Error: **{lr_mae:.1f} calories**
+            - Model Accuracy: **{lr_r2_test*100:.1f}%**
+            
+            **Key Predictors:**
+            - Distance contributes **{abs(lr_model.coef_[0]):.1f} cal/km**
+            - Duration contributes **{abs(lr_model.coef_[1]):.1f} cal/min**
+            - Heart Rate contributes **{abs(lr_model.coef_[2]):.1f} cal/BPM**
+            
+            **Interpretation:**
+            The model successfully predicts calorie expenditure with reasonable accuracy. 
+            Heart rate and duration are strong indicators of energy expenditure.
+            """)
+        else:
+            st.markdown("""
+            **Data Requirements:**
+            - Insufficient data for machine learning analysis
+            - Minimum required: 15 activities with heart rate data
+            - Current available: Less than required threshold
+            
+            **Recommendation:**
+            Continue tracking activities to enable predictive modeling and deeper insights.
+            """)
