@@ -1,5 +1,6 @@
 
 * This app will use linear regression to identify spending trends (increasing/decreasing/stable) and classification rules based on purchase frequency and average price to determine the shopper profile (Frequent Buyer, Careful Spender, etc.).
+* The app solves the problem that many people are not aware of the daily budget they are using and are not aware of how much daily costs affect their overall personal budget 
 
 It has classification rules:
 
